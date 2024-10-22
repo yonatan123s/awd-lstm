@@ -89,7 +89,7 @@ from model import AWDLSTM
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Hyperparameters
-batch_size = 80
+batch_size = 20
 eval_batch_size = 10
 seq_len = 70  # Increased sequence length as per original implementation
 epochs = 500  # Set a high number; we'll use early stopping
@@ -117,7 +117,7 @@ model = AWDLSTM(
     n_layers=3,
     dropout=0.4,     # Output dropout
     dropouth=0.25,   # Hidden-to-hidden dropout
-    dropouti=0.65,   # Input (embedding) dropout
+    dropouti=0.4,   # Input (embedding) dropout
     wdrop=0.5,
     tie_weights=True
 ).to(device)
