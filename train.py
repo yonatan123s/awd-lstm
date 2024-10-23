@@ -3,90 +3,23 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import math
-import time
-from data import Corpus, batchify
-from model import AWDLSTM
-from torch.optim import ASGD
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-# Hyperparameters
-batch_size = 80
-eval_batch_size = 10
-seq_len = 35
-epochs = 40
-lr = 30  # Initial learning rate
-clip = 0.25  # Gradient clipping
-best_val_loss = None
-nonmono = 5  # Number of epochs to wait before switching to ASGD
-epoch_since_best = 0
-optimizer_type = 'SGD'  # Start with SGD
-
-# Load data
-corpus = Corpus('ptbdataset')
-
-train_data = batchify(corpus.train, batch_size, device)
-val_data = batchify(corpus.valid, eval_batch_size, device)
-test_data = batchify(corpus.test, eval_batch_size, device)
-
-ntokens = len(corpus.dictionary)
-model = AWDLSTM(
-    ntokens,
-    emb_size=400,
-    n_hid=1150,
-    n_layers=3,
-    dropout=0.5,
-    dropouth=0.4,
-    dropouti=0.65,
-    wdrop=0.5,
-    tie_weights=True  # Enable weight tying
-).to(device)
-
-criterion = nn.CrossEntropyLoss()
-
-def repackage_hidden(h):
-    if isinstance(h, torch.Tensor):
-        return h.detach()
-    else:
-        return [repackage_hidden(v) for v in h]
-
-
-def get_batch(source, i):
-    seq_len = min(len(source) - 1 - i, 35)
-    data = source[i:i+seq_len]
-    target = source[i+1:i+1+seq_len].reshape(-1)
-    return data, target
-
-def evaluate(data_source):
-    model.eval()
-    total_loss = 0.
-    hidden = model.init_hidden(eval_batch_size)
-    with torch.no_grad():
-        for i in range(0, data_source.size(0) - 1, seq_len):
-            data, targets = get_batch(data_source, i)
-            output, hidden = model(data, hidden)
-            output_flat = output.view(-1, ntokens)
-            total_loss += len(data) * criterion(output_flat, targets).item()
-            hidden = repackage_hidden(hidden)
-    return total_loss / len(data_source)
-
-# Hyperparameters for AR and TAR
-alpha = 2.0  # Weight for activation regularization
-beta = 1.0   # Weight for temporal activation regularization
-
-# train.py
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
 from torch.optim import ASGD
 import math
 import time
+import argparse  # Import argparse module
 from data import Corpus, batchify
 from model import AWDLSTM
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# Argument parsing
+parser = argparse.ArgumentParser(description='AWD-LSTM Language Model Training')
+
+parser.add_argument('--train', action='store_true', help='Train a new model')
+parser.add_argument('--load', type=str, help='Path to a saved model to load')
+parser.add_argument('--evaluate', action='store_true', help='Evaluate the model on the test set')
+
+args = parser.parse_args()
 
 # Hyperparameters
 batch_size = 20
@@ -94,6 +27,7 @@ eval_batch_size = 10
 seq_len = 70  # Increased sequence length as per original implementation
 epochs = 500  # Set a high number; we'll use early stopping
 lr = 30  # Initial learning rate
+#lr = 1.17e-01
 clip = 0.25  # Gradient clipping
 weight_decay = 1.2e-6  # Weight decay (L2 regularization)
 alpha = 2.0  # Weight for activation regularization (AR)
@@ -117,7 +51,7 @@ model = AWDLSTM(
     n_layers=3,
     dropout=0.4,     # Output dropout
     dropouth=0.25,   # Hidden-to-hidden dropout
-    dropouti=0.4,   # Input (embedding) dropout
+    dropouti=0.4,    # Input (embedding) dropout
     wdrop=0.5,
     tie_weights=True
 ).to(device)
@@ -129,7 +63,7 @@ def repackage_hidden(h):
     if isinstance(h, torch.Tensor):
         return h.detach()
     else:
-        return tuple(repackage_hidden(v) for v in h)
+        return [repackage_hidden(v) for v in h]
 
 def get_batch(source, i):
     seq_len = min(len(source) - 1 - i, 70)
@@ -207,10 +141,14 @@ def train():
 
         # Evaluate on validation data
         val_loss = evaluate(val_data)
+        # After evaluating on validation data
         print('-' * 89)
-        print(f'| end of epoch {epoch:3d} | valid loss {val_loss:.2f} | '
+        print(f'| end of epoch {epoch:3d} | valid loss {val_loss:.6f} | '
               f'valid ppl {math.exp(val_loss):.2f}')
         print('-' * 89)
+
+        # Print best_val_loss for comparison
+        print(f'Current val_loss: {val_loss:.6f}, Best val_loss: {best_val_loss if best_val_loss else "N/A"}')
 
         # Save the model if the validation loss is the best we've seen so far
         if not best_val_loss or val_loss < best_val_loss:
@@ -221,6 +159,9 @@ def train():
             epoch_since_best += 1
 
         # Switch to ASGD if no improvement for 'nonmono' epochs
+        print(epoch_since_best)
+        print(nonmono)
+        print(optimizer_type)
         if epoch_since_best >= nonmono and optimizer_type == 'SGD':
             print('=' * 89)
             print('Switching to ASGD')
@@ -237,26 +178,17 @@ def train():
             print('Validation perplexity below 60, stopping training.')
             break
 
-    # Load the best saved model
-    model.load_state_dict(torch.load('best_model.pt'))
+if args.load:
+    print(f'Loading model from {args.load}')
+    model.load_state_dict(torch.load(args.load, map_location=device))
 
-    # Run on test data
+if args.train:
+    # Call the train function to start training
+    train()
+
+if args.evaluate:
+    # Evaluate the model on the test set
     test_loss = evaluate(test_data)
     print('=' * 89)
-    print(f'| End of training | test loss {test_loss:.2f} | test ppl {math.exp(test_loss):.2f}')
+    print(f'| Evaluation | test loss {test_loss:.2f} | test ppl {math.exp(test_loss):.2f}')
     print('=' * 89)
-
-
-
-# Call the train function to start training
-train()
-
-
-# Load the best saved model.
-model.load_state_dict(torch.load('best_model.pt'))
-
-# Run on test data.
-test_loss = evaluate(test_data)
-print('=' * 89)
-print(f'| End of training | test loss {test_loss:5.2f} | test ppl {math.exp(test_loss):8.2f}')
-print('=' * 89)
