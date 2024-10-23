@@ -1,5 +1,3 @@
-# model.py
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -114,7 +112,7 @@ class WeightDrop(nn.Module):
 
 class AWDLSTM(nn.Module):
     def __init__(self, vocab_size, emb_size=400, n_hid=1150, n_layers=3,
-                 dropout=0.4, dropouth=0.25, dropouti=0.65, wdrop=0.5,
+                 dropout=0.4, dropouth=0.25, dropouti=0.65, dropoute=0.1, wdrop=0.5,
                  tie_weights=True):
         super().__init__()
         self.lockdrop = LockedDropout()
@@ -138,6 +136,7 @@ class AWDLSTM(nn.Module):
         self.n_hid = n_hid
         self.dropout = dropout
         self.dropouti = dropouti
+        self.dropoute = dropoute  # Add the new dropoute parameter
         self.dropouth = dropouth
         self.tie_weights = tie_weights
 
@@ -152,7 +151,8 @@ class AWDLSTM(nn.Module):
         nn.init.uniform_(self.decoder.weight, -init_range, init_range)
 
     def forward(self, input, hidden, return_h=False):
-        emb = self.emb_dropout(self.encoder, input, dropout=self.dropouti)
+        # Apply embedding dropout using the new `dropoute` parameter
+        emb = self.emb_dropout(self.encoder, input, dropout=self.dropoute)
         emb = self.lockdrop(emb, self.dropouti)
         raw_output = emb
         new_hidden = []
@@ -191,4 +191,3 @@ class AWDLSTM(nn.Module):
         return [(weight.new_zeros(batch_size, self.hidden_sizes[l]),
                  weight.new_zeros(batch_size, self.hidden_sizes[l]))
                 for l in range(self.n_layers)]
-

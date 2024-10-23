@@ -52,6 +52,7 @@ model = AWDLSTM(
     dropout=0.4,     # Output dropout
     dropouth=0.25,   # Hidden-to-hidden dropout
     dropouti=0.4,    # Input (embedding) dropout
+    dropoute=0.1,
     wdrop=0.5,
     tie_weights=True
 ).to(device)
@@ -90,7 +91,7 @@ def train():
     # Set up the optimizer and scheduler
     optimizer = optim.SGD(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.25, patience=0
+        optimizer, mode='min', factor=0.5, patience=1
     )
 
     best_val_loss = None
