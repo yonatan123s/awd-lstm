@@ -18,7 +18,7 @@ parser = argparse.ArgumentParser(description='AWD-LSTM Language Model Training')
 parser.add_argument('--train', action='store_true', help='Train a new model')
 parser.add_argument('--load', type=str, help='Path to a saved model to load')
 parser.add_argument('--evaluate', action='store_true', help='Evaluate the model on the test set')
-
+parser.add_argument("--bptt", type=int, default=70)
 args = parser.parse_args()
 
 # Hyperparameters
@@ -32,7 +32,7 @@ clip = 0.25  # Gradient clipping
 weight_decay = 1.2e-6  # Weight decay (L2 regularization)
 alpha = 2.0  # Weight for activation regularization (AR)
 beta = 1.0   # Weight for temporal activation regularization (TAR)
-nonmono = 5  # Number of epochs to wait before switching to ASGD
+nonmono = 0  # Number of epochs to wait before switching to ASGD
 
 # Load data
 corpus = Corpus('ptbdataset')
@@ -66,11 +66,6 @@ def repackage_hidden(h):
     else:
         return [repackage_hidden(v) for v in h]
 
-def get_batch(source, i):
-    seq_len = min(len(source) - 1 - i, 70)
-    data = source[i:i+seq_len]
-    target = source[i+1:i+1+seq_len].reshape(-1)
-    return data, target
 
 def evaluate(data_source):
     """Evaluate the model on the validation or test set."""
@@ -78,13 +73,22 @@ def evaluate(data_source):
     total_loss = 0.
     hidden = model.init_hidden(eval_batch_size)
     with torch.no_grad():
-        for i in range(0, data_source.size(0) - 1, seq_len):
-            data, targets = get_batch(data_source, i)
+        for i in range(0, data_source.size(0) - 1, args.bptt):
+            data, targets = get_batch(data_source, i, args.bptt)
             hidden = repackage_hidden(hidden)
             output, hidden = model(data, hidden)
             output_flat = output.view(-1, ntokens)
             total_loss += len(data) * criterion(output_flat, targets).item()
     return total_loss / len(data_source)
+
+import numpy as np  # Import numpy for generating random numbers
+
+def get_batch(source, i, seq_len):
+    """Get a batch of data from the source with a variable sequence length."""
+    seq_len = min(len(source) - 1 - i, seq_len)  # Ensure seq_len doesn't exceed the dataset
+    data = source[i:i+seq_len]
+    target = source[i+1:i+1+seq_len].reshape(-1)
+    return data, target
 
 def train():
     """Train the model using SGD and switch to ASGD when appropriate."""
@@ -105,11 +109,24 @@ def train():
         start_time = time.time()
         hidden = model.init_hidden(batch_size)
 
-        for batch, i in enumerate(range(0, train_data.size(0) - 1, seq_len)):
-            data, targets = get_batch(train_data, i)
+        batch, i = 0, 0  # Initialize batch counter and index
+        while i < train_data.size(0) - 1 - 1:
+            # Dynamic sequence length adjustment
+            bptt = args.bptt if np.random.random() < 0.95 else args.bptt / 2.  # 95% chance to use args.bptt, 5% chance to use half
+            # Prevent excessively small or negative sequence lengths
+            seq_len = max(5, int(np.random.normal(bptt, 5)))  # Normal distribution around `bptt`
+
+            # Adjust learning rate based on the sequence length
+            lr2 = optimizer.param_groups[0]['lr']
+            optimizer.param_groups[0]['lr'] = lr2 * seq_len / args.bptt
+            #print(seq_len, optimizer.param_groups[0]['lr'])
+            # Get the batch with the dynamically calculated sequence length
+            data, targets = get_batch(train_data, i, seq_len)
+
             optimizer.zero_grad()
             hidden = repackage_hidden(hidden)
 
+            # Forward pass
             (output, hidden), raw_outputs, outputs = model(data, hidden, return_h=True)
             loss = criterion(output.view(-1, ntokens), targets)
 
@@ -131,6 +148,9 @@ def train():
 
             total_loss += loss.item()
 
+            # Reset learning rate back to original value after the step
+            optimizer.param_groups[0]['lr'] = lr2
+
             if batch % 200 == 0 and batch > 0:
                 cur_loss = total_loss / 200
                 elapsed = time.time() - start_time
@@ -139,6 +159,9 @@ def train():
                       f'loss {cur_loss:.2f} | ppl {math.exp(cur_loss):.2f}')
                 total_loss = 0
                 start_time = time.time()
+
+            i += seq_len  # Move forward by the dynamic sequence length
+            batch += 1  # Increment the batch counter
 
         # Evaluate on validation data
         val_loss = evaluate(val_data)
@@ -160,24 +183,29 @@ def train():
             epoch_since_best += 1
 
         # Switch to ASGD if no improvement for 'nonmono' epochs
-        print(epoch_since_best)
-        print(nonmono)
+        print("epochs_since_best: " + str(epoch_since_best))
         print(optimizer_type)
         if epoch_since_best >= nonmono and optimizer_type == 'SGD':
             print('=' * 89)
             print('Switching to ASGD')
             print('=' * 89)
             optimizer = ASGD(model.parameters(), lr=lr, t0=0, lambd=0., weight_decay=weight_decay)
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', factor=0.5, patience=1
+            )
             optimizer_type = 'ASGD'
 
         # Adjust learning rate if using SGD
         if optimizer_type == 'SGD':
+            scheduler.step(val_loss)
+        if optimizer_type == 'ASGD':
             scheduler.step(val_loss)
 
         # Stop training if validation perplexity is below the target
         if math.exp(val_loss) <= 60:
             print('Validation perplexity below 60, stopping training.')
             break
+
 
 if args.load:
     print(f'Loading model from {args.load}')
