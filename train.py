@@ -8,6 +8,7 @@ import argparse  # Import argparse module
 from data import Corpus, batchify
 from model import AWDLSTM
 import numpy as np  # Import numpy for generating random numbers
+import torch.nn.functional as F  # Import for softmax
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -154,6 +155,46 @@ def train(bptt):
             print('Validation perplexity below 60, stopping training.')
             break
 
+
+def predict_top_5(sequence):
+    """Given a sequence, predict the top 5 next words and their probabilities."""
+    model.eval()
+    tokens = []
+    unk_idx = corpus.dictionary.word2idx.get('<unk>')  # Get the index for '<unk>'
+    for word in sequence.split():
+        idx = corpus.dictionary.word2idx.get(word, unk_idx)
+        tokens.append(idx)
+    input_tensor = torch.tensor(tokens).unsqueeze(1).to(device)  # Shape: (seq_len, 1)
+    hidden = model.init_hidden(1)
+
+    with torch.no_grad():
+        output, hidden = model(input_tensor, hidden)
+        output = output[-1, 0, :]  # Get the last output vector for batch element 0
+        probabilities = F.softmax(output, dim=0)  # Apply softmax on the output
+
+    top_5_prob, top_5_idx = torch.topk(probabilities, 5)
+    top_5_words = [corpus.dictionary.idx2word[idx.item()] for idx in top_5_idx]
+
+    return list(zip(top_5_words, top_5_prob.tolist()))
+
+
+
+def interactive_mode():
+    """Interactive mode for user to input sequences and see top 5 predictions."""
+    print("Enter a sequence to predict the next word (type 'terminate run' to exit):")
+    while True:
+        sequence = input("Input sequence: ").strip()
+        if sequence.lower() == "terminate run":
+            break
+
+        predictions = predict_top_5(sequence)
+        if predictions:
+            print("Top 5 predictions and probabilities:")
+            for word, prob in predictions:
+                print(f"{word}: {prob:.4f}")
+        else:
+            print("No predictions available for the given sequence.")
+
 # Main function for argument parsing and execution
 def main():
     # Argument parsing
@@ -161,6 +202,7 @@ def main():
     parser.add_argument('--train', action='store_true', help='Train a new model')
     parser.add_argument('--load', type=str, help='Path to a saved model to load')
     parser.add_argument('--evaluate', action='store_true', help='Evaluate the model on the test set')
+    parser.add_argument('--interactive', action='store_true', help='Enter interactive mode to input sequences')
     parser.add_argument("--bptt", type=int, default=70)
     args = parser.parse_args()
 
@@ -176,6 +218,9 @@ def main():
         print('=' * 89)
         print(f'| Evaluation | test loss {test_loss:.2f} | test ppl {math.exp(test_loss):.2f}')
         print('=' * 89)
+
+    if args.interactive:
+        interactive_mode()
 
 # Ensure the script only runs when executed directly
 if __name__ == "__main__":
